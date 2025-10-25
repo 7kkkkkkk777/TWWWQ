@@ -12,7 +12,7 @@ if (!defined('ABSPATH')) {
 
 class Lomadee {
 
-    private $api_base_url = 'https://api.lomadee.com.br';
+    private $api_base_url = 'https://api-beta.lomadee.com.br';
     private $logger;
 
     public function __construct() {
@@ -80,16 +80,16 @@ class Lomadee {
             return new \WP_Error('missing_source_id', __('Source ID não informado. Configure o Source ID nas configurações do provedor.', '7k-coupons-importer'));
         }
 
-        $endpoint = '/offer/_all';
+        $endpoint = '/affiliate/campaigns';
         $response = $this->make_api_request($endpoint, $settings, array(
-            'size' => 1
+            'limit' => 1
         ));
 
         if (is_wp_error($response)) {
             return $response;
         }
 
-        if (!isset($response['offers'])) {
+        if (!isset($response['data'])) {
             return new \WP_Error('invalid_response', __('Resposta inválida da API', '7k-coupons-importer'));
         }
 
@@ -113,25 +113,26 @@ class Lomadee {
         $page_size = min($limit, 100);
 
         $params = array(
-            'size' => $page_size,
-            'page' => $page
+            'limit' => $page_size,
+            'page' => $page,
+            'types' => 'GenericCoupon,PersonalCoupon,Offer'
         );
 
         if (!empty($settings['category_filter'])) {
-            $params['categoryId'] = $settings['category_filter'];
+            $params['categories'] = $settings['category_filter'];
         }
 
         if (!empty($settings['store_filter'])) {
-            $params['storeId'] = $settings['store_filter'];
+            $params['organizationId'] = $settings['store_filter'];
         }
 
         $this->logger->log('debug', 'Lomadee: Parâmetros de busca: ' . json_encode($params));
 
         while (count($all_coupons) < $limit) {
-            $this->logger->log('debug', sprintf('Lomadee: Buscando página %d (size: %d)', $page, $page_size));
+            $this->logger->log('debug', sprintf('Lomadee: Buscando página %d (limit: %d)', $page, $page_size));
 
             $params['page'] = $page;
-            $endpoint = '/offer/_all';
+            $endpoint = '/affiliate/campaigns';
             $response = $this->make_api_request($endpoint, $settings, $params);
 
             if (is_wp_error($response)) {
@@ -139,12 +140,12 @@ class Lomadee {
                 break;
             }
 
-            if (!isset($response['offers']) || !is_array($response['offers'])) {
+            if (!isset($response['data']) || !is_array($response['data'])) {
                 $this->logger->log('warning', 'Lomadee: Resposta sem dados válidos');
                 break;
             }
 
-            $offers_data = $response['offers'];
+            $offers_data = $response['data'];
             $this->logger->log('debug', sprintf('Lomadee: Página %d - %d ofertas encontradas', $page, count($offers_data)));
 
             if (empty($offers_data)) {
@@ -168,8 +169,12 @@ class Lomadee {
                 break;
             }
 
-            if (!isset($response['pagination']['hasNext']) || !$response['pagination']['hasNext']) {
-                $this->logger->log('info', 'Lomadee: Última página alcançada');
+            if (isset($response['meta']['page']) && isset($response['meta']['totalPages'])) {
+                if ($response['meta']['page'] >= $response['meta']['totalPages']) {
+                    $this->logger->log('info', 'Lomadee: Última página alcançada');
+                    break;
+                }
+            } else {
                 break;
             }
 
@@ -186,9 +191,7 @@ class Lomadee {
     private function make_api_request($endpoint, $settings, $params = array()) {
         $start_time = microtime(true);
 
-        $params['sourceId'] = $settings['source_id'];
-
-        $url = $this->api_base_url . '/v3/' . $settings['api_key'] . $endpoint;
+        $url = $this->api_base_url . $endpoint;
 
         if (!empty($params)) {
             $url = add_query_arg($params, $url);
@@ -197,6 +200,7 @@ class Lomadee {
         $args = array(
             'timeout' => 30,
             'headers' => array(
+                'x-api-key' => $settings['api_key'],
                 'User-Agent' => 'WordPress/7K-Coupons-Importer',
                 'Accept' => 'application/json'
             )
@@ -233,7 +237,7 @@ class Lomadee {
         }
 
         $this->logger->log('debug', sprintf('Lomadee API Response: %d items, Response time: %.2fms',
-            isset($data['offers']) ? count($data['offers']) : 0,
+            isset($data['data']) ? count($data['data']) : 0,
             $response_time
         ));
 
@@ -317,43 +321,48 @@ class Lomadee {
 
         $this->logger->log('debug', sprintf('Lomadee: Processando oferta - ID: %s, Nome: %s',
             $api_coupon['id'] ?? 'N/A',
-            isset($api_coupon['nome']) ? substr($api_coupon['nome'], 0, 50) : 'N/A'
+            isset($api_coupon['name']) ? substr($api_coupon['name'], 0, 50) : 'N/A'
         ));
 
-        $coupon['title'] = isset($api_coupon['nome']) ? sanitize_text_field($api_coupon['nome']) : '';
-        $coupon['description'] = isset($api_coupon['descricao']) ? sanitize_textarea_field($api_coupon['descricao']) : '';
+        $coupon['title'] = isset($api_coupon['name']) ? sanitize_text_field($api_coupon['name']) : '';
+        $coupon['description'] = isset($api_coupon['description']) ? sanitize_textarea_field($api_coupon['description']) : '';
 
         $coupon['link'] = '';
-        if (isset($api_coupon['link']) && !empty($api_coupon['link'])) {
-            $coupon['link'] = esc_url_raw($api_coupon['link']);
-            $this->logger->log('debug', sprintf('Lomadee: Link encontrado: %s', substr($coupon['link'], 0, 50)));
+        if (isset($api_coupon['channels']) && is_array($api_coupon['channels'])) {
+            foreach ($api_coupon['channels'] as $channel) {
+                if (isset($channel['shortUrl']) && !empty($channel['shortUrl'])) {
+                    $coupon['link'] = esc_url_raw($channel['shortUrl']);
+                    $this->logger->log('debug', sprintf('Lomadee: Link encontrado: %s', substr($coupon['link'], 0, 50)));
+                    break;
+                }
+            }
         }
 
         $coupon['code'] = '';
-        if (isset($api_coupon['cupom']) && !empty($api_coupon['cupom'])) {
-            $coupon['code'] = sanitize_text_field($api_coupon['cupom']);
+        if (isset($api_coupon['value']) && !empty($api_coupon['value'])) {
+            $coupon['code'] = sanitize_text_field($api_coupon['value']);
             $this->logger->log('debug', sprintf('Lomadee: Código encontrado: %s', $coupon['code']));
         }
 
         $coupon['advertiser'] = '';
         $coupon['advertiser_id'] = '';
-        if (isset($api_coupon['loja'])) {
-            if (isset($api_coupon['loja']['id'])) {
-                $coupon['advertiser_id'] = sanitize_text_field($api_coupon['loja']['id']);
+        if (isset($api_coupon['organization'])) {
+            if (isset($api_coupon['organization']['id'])) {
+                $coupon['advertiser_id'] = sanitize_text_field($api_coupon['organization']['id']);
             }
-            if (isset($api_coupon['loja']['nome'])) {
-                $coupon['advertiser'] = sanitize_text_field($api_coupon['loja']['nome']);
+            if (isset($api_coupon['organization']['name'])) {
+                $coupon['advertiser'] = sanitize_text_field($api_coupon['organization']['name']);
             }
         }
 
         $coupon['start_date'] = '';
         $coupon['expiration'] = '';
-        if (isset($api_coupon['vigencia'])) {
-            if (isset($api_coupon['vigencia']['inicio'])) {
-                $coupon['start_date'] = coupon_importer_parse_date($api_coupon['vigencia']['inicio']);
+        if (isset($api_coupon['period'])) {
+            if (isset($api_coupon['period']['start'])) {
+                $coupon['start_date'] = coupon_importer_parse_date($api_coupon['period']['start']);
             }
-            if (isset($api_coupon['vigencia']['fim'])) {
-                $coupon['expiration'] = coupon_importer_parse_date($api_coupon['vigencia']['fim']);
+            if (isset($api_coupon['period']['end'])) {
+                $coupon['expiration'] = coupon_importer_parse_date($api_coupon['period']['end']);
             }
         }
 
@@ -362,14 +371,16 @@ class Lomadee {
         $coupon['tags'] = array();
         $coupon['category'] = array();
 
-        if (isset($api_coupon['categoria']) && is_array($api_coupon['categoria'])) {
-            if (isset($api_coupon['categoria']['nome'])) {
-                $coupon['category'][] = sanitize_text_field($api_coupon['categoria']['nome']);
+        if (isset($api_coupon['categories']) && is_array($api_coupon['categories'])) {
+            foreach ($api_coupon['categories'] as $category) {
+                if (isset($category['name'])) {
+                    $coupon['category'][] = sanitize_text_field($category['name']);
+                }
             }
         }
 
-        if (isset($api_coupon['preco_atual']) && !empty($api_coupon['preco_atual'])) {
-            $coupon['tags'][] = 'preco: ' . $api_coupon['preco_atual'];
+        if (isset($api_coupon['type']) && !empty($api_coupon['type'])) {
+            $coupon['tags'][] = sanitize_text_field($api_coupon['type']);
         }
 
         $coupon['coupon_type'] = !empty($coupon['code']) ? 1 : 3;
@@ -423,11 +434,11 @@ class Lomadee {
     }
 
     private function extract_discount($api_coupon) {
-        if (isset($api_coupon['desconto']) && !empty($api_coupon['desconto'])) {
-            return sanitize_text_field($api_coupon['desconto']);
+        if (isset($api_coupon['discount']) && !empty($api_coupon['discount'])) {
+            return sanitize_text_field($api_coupon['discount']);
         }
 
-        $text = ($api_coupon['nome'] ?? '') . ' ' . ($api_coupon['descricao'] ?? '');
+        $text = ($api_coupon['name'] ?? '') . ' ' . ($api_coupon['description'] ?? '');
 
         if (preg_match('/(\d+)%\s*(off|desconto|discount)/i', $text, $matches)) {
             return $matches[1] . '% OFF';
@@ -441,7 +452,7 @@ class Lomadee {
     }
 
     private function determine_coupon_type($api_coupon) {
-        if (isset($api_coupon['cupom']) && !empty($api_coupon['cupom'])) {
+        if (isset($api_coupon['type']) && ($api_coupon['type'] === 'PersonalCoupon' || $api_coupon['type'] === 'GenericCoupon')) {
             return 1;
         }
         return 3;

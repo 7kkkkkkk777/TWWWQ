@@ -327,39 +327,44 @@ class Admitad {
         }
         $coupon['description'] = $description;
 
-        // Prioridade de links: goto_link > frameset_link > link > gerar deeplink
+        // Prioridade de links: promocode_link > goto_link > frameset_link > link > gerar deeplink
         $coupon['link'] = '';
-        
-        // 1. Tentar goto_link (link direto de afiliado)
-        if (isset($api_coupon['goto_link']) && !empty($api_coupon['goto_link'])) {
+
+        // 1. Tentar promocode_link (para cupons com código)
+        if (isset($api_coupon['promocode_link']) && !empty($api_coupon['promocode_link'])) {
+            $coupon['link'] = esc_url_raw($api_coupon['promocode_link']);
+            $this->logger->log('debug', 'Admitad: Usando promocode_link');
+        }
+        // 2. Tentar goto_link (link direto de afiliado)
+        elseif (isset($api_coupon['goto_link']) && !empty($api_coupon['goto_link'])) {
             $coupon['link'] = esc_url_raw($api_coupon['goto_link']);
             $this->logger->log('debug', 'Admitad: Usando goto_link');
         }
-        // 2. Tentar frameset_link (alternativo com header)
+        // 3. Tentar frameset_link (alternativo com header)
         elseif (isset($api_coupon['frameset_link']) && !empty($api_coupon['frameset_link'])) {
             $coupon['link'] = esc_url_raw($api_coupon['frameset_link']);
             $this->logger->log('debug', 'Admitad: Usando frameset_link');
         }
-        // 3. Tentar link direto
+        // 4. Tentar link direto
         elseif (isset($api_coupon['link']) && !empty($api_coupon['link'])) {
             $coupon['link'] = esc_url_raw($api_coupon['link']);
             $this->logger->log('debug', 'Admitad: Usando link direto');
         }
 
-        // 4. Se ainda não tem link e temos website_id + default_link da campanha, gerar deeplink
-        if (empty($coupon['link']) && 
-            !empty($settings['website_id']) && 
-            isset($api_coupon['campaign']['default_link']) && 
+        // 5. Se ainda não tem link e temos website_id + default_link da campanha, gerar deeplink
+        if (empty($coupon['link']) &&
+            !empty($settings['website_id']) &&
+            isset($api_coupon['campaign']['default_link']) &&
             !empty($api_coupon['campaign']['default_link']) &&
             isset($api_coupon['campaign']['id'])) {
-            
+
             $this->logger->log('info', 'Admitad: Nenhum link disponível, tentando gerar deeplink...');
             $generated_link = $this->generate_deeplink(
-                $settings, 
-                $api_coupon['campaign']['default_link'], 
+                $settings,
+                $api_coupon['campaign']['default_link'],
                 $api_coupon['campaign']['id']
             );
-            
+
             if ($generated_link) {
                 $coupon['link'] = $generated_link;
                 $this->logger->log('info', 'Admitad: Deeplink gerado com sucesso!');
